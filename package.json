@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "parser": "lezer-generator freemarker/fm.grammar -o freemarker/parser --typeScript",
+    "parser-test": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"CommonJS\",\"moduleResolution\":\"Node\"}' node -r ts-node/register/transpile-only freemarker/test/test-tree.ts"
   },
   "dependencies": {
     "@ant-design/icons": "^6.1.0",
@@ -45,6 +47,8 @@
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "ts-node": "^10.9.2",
+    "@lezer/generator": "^1.0.0"
   }
 }
