@@ -1,0 +1,7 @@
+# Self-closing tag
+
+<#foo>bar</#foo>
+
+==>
+
+Document(Element(OpenTag(StartTag,TagName,EndTag),Text,CloseTag(StartCloseTag,TagName,EndTag)))

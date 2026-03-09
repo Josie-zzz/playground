@@ -1,0 +1,291 @@
+// -------------------------- 优先级与入口 --------------------------
+// 这里声明一个名为 call 的优先级层级，用来配合 !call 约束某些扩展（比如括号访问）
+// 目的：避免表达式里的 “后缀/访问” 组合产生不符合预期的归约
+@precedence {
+  call
+}
+
+// 文档入口：允许任意顺序混排文本、$占位符、标签【标签】、注释。 * 代表任意数量
+@top Document { (Text | Interpolation | Directive | Comment)* }
+
+// -------------------------- 普通文本 --------------------------
+// Text 负责接住模板中的“非结构化”部分
+// 注意：<$ 和 <# / <@ 等符号都可能是结构起始，需要在 token 里做优先级控制
+Text { TextContent | SafeDollar | LessThan }
+
+// -------------------------- 注释 --------------------------
+// FreeMarker 注释：<#-- ... -->
+// CommentContent 采用“尽量少吃”的方式避免把 --/--> 误吞掉
+Comment {
+  CommentStart CommentContent CommentEnd
+}
+
+// -------------------------- 指令结构 --------------------------
+// 指令分三类：
+// 1) BlockDirective：有显式结束标签 </#...>
+// 2) LeafDirective：单行/自闭合（> 或 /> 结束）
+// 3) MacroDirective：宏（<@...> ... </@...> 或自闭合）
+Directive {
+  BlockDirective | LeafDirective | MacroDirective
+}
+
+BlockDirective {
+  BlockDirectiveHead DirectiveBody BlockDirectiveEnd
+}
+
+MacroDirective {
+  MacroBlock | MacroSelfClose
+}
+
+MacroBlock {
+  MacroBlockHead DirectiveBody MacroDirectiveEnd
+}
+
+MacroSelfClose {
+  MacroSelfCloseHead
+}
+
+DirectiveBody {
+  // 指令体内部允许再次嵌套指令、$占位符、注释与文本
+  (Text | Interpolation | Directive | Comment)*
+}
+
+// 需要跳过空格的解析
+// 这一段 @skip { Space } 会让内部规则“天然忽略空白”
+// 用在：指令参数、插值表达式等语法区域，让模板更宽容（<#if  a  && b>）
+@skip { Space } {
+  LeafDirective {
+    LeafDirectiveStart DirectiveArg* (SelfClose | GreaterThan)
+  }
+
+  Interpolation {
+    // 插值：${ ... }
+    InterpolationStart Expression InterpolationEnd
+  }
+
+  BlockDirectiveHead {
+    // block 起始：<#if ...> / <#list ...> 等
+    BlockDirectiveStart DirectiveArg* GreaterThan
+  }
+
+  BlockDirectiveEnd {
+    // block 结束：</#if> 等，名字需与 BlockDirectiveStart 对应
+    BlockDirectiveEndHead GreaterThan
+  }
+
+  MacroBlockHead {
+    // macro 起始：<@name ...>
+    MacroDirectiveStart DirectiveArg* GreaterThan
+  }
+
+  MacroSelfCloseHead {
+    // macro 自闭合：<@name ... />
+    MacroDirectiveStart DirectiveArg* SelfClose
+  }
+
+  MacroDirectiveEnd {
+    // macro 结束：</@name>
+    MacroDirectiveEndHead GreaterThan
+  }
+
+  DirectiveArg {
+    // 指令参数：这里用 Expression 与逗号组合，覆盖形如 a, b, c 的参数序列
+    Expression
+  }
+
+  // 表达式
+  Expression {
+    TernaryExpression
+  }
+
+  // 三元运算符：a ? b : c
+  TernaryExpression {
+    BaseExpression (TernaryQuestion Expression TernaryColon Expression)?
+  }
+
+  BaseExpression {
+    // 表达式核心：
+    // - 以 (UnaryOp? Term) 作为起点（比如 !a / not a / a）
+    // - 后面允许接：二元运算、后缀 ??、内建调用 ?xxx(...)、无参内建 ?xxx、默认值 !、以及括号访问 [...]
+    // - 其中括号访问受 !call 优先级约束，避免与“调用/扩展”类语法互相抢占
+    (UnaryOp? Term) (BinaryOp (UnaryOp? Term) | PostfixOp | BuiltInCall | BuiltInNoArgs | DefaultValue | !call BracketAccess)*
+  }
+
+  BuiltInCall {
+    // 内建函数（带参数）：a?string("0.00")
+    BuiltInQuestion BuiltInName BuiltInArgsStart BuiltInArgs? ")"
+  }
+
+  BuiltInNoArgs {
+    // 内建函数（无参）：a?size
+    BuiltInQuestion BuiltInName
+  }
+
+  BuiltInName {
+    // 内建名目前按 Variable 解析，后续如需保留字可在 token 层做 specialize
+    Variable
+  }
+
+  BuiltInArgs {
+    // 内建参数列表：Expression 逗号分隔
+    Expression ("," Expression)*
+  }
+
+  BracketAccess {
+    // 括号访问：a[b] / a["k"]
+    "[" Expression "]"
+  }
+
+  DefaultValue {
+    // 默认值：a!0 或 a!"fallback"（具体起始 token 由 external token 决定）
+    DefaultValueStart Term
+  }
+
+  Term {
+    // 表达式的原子项（字面量、变量、括号、序列、哈希）
+    NullLiteral | BooleanLiteral | Variable | NumberLiteral | StringLiteral | ParenExpression | SequenceLiteral | HashLiteral
+  }
+
+  // true ,false ,null 等关键字
+  BooleanLiteral {
+    kw<"true"> | kw<"false">
+  }
+
+  NullLiteral {
+    kw<"null">
+  }
+
+  ParenExpression {
+    "(" Expression ")"
+  }
+
+  SequenceLiteral {
+    "[" (Expression ("," Expression)*)? "]"
+  }
+
+  HashLiteral {
+    "{" (HashEntry ("," HashEntry)*)? "}"
+  }
+
+  HashEntry {
+    // 哈希键允许字符串或变量（如 {"a": 1, b: 2}）
+    (StringLiteral | Variable) ":" Expression
+  }
+}
+
+// 禁止跳过任何字符，比如空格
+// 这段 @skip {} 用来精确识别标签起始/结束形态：
+// - 标签起始需要紧贴（例如 "<#" 之后的指令名），不应吞掉空格以免造成歧义
+@skip {} {
+  BlockDirectiveStart {
+    StartTag BlockDirectiveName
+  }
+
+  LeafDirectiveStart {
+    StartTag LeafDirectiveName
+  }
+
+  BlockDirectiveEndHead {
+    EndTag BlockDirectiveName
+  }
+
+  MacroDirectiveStart {
+    MacroStartTag Variable
+  }
+
+  MacroDirectiveEndHead {
+    MacroEndTag Variable
+  }
+}
+
+// 将关键字从变量的规则定义中抽离出来，因为这部分会先满足变量的规则
+// kw<"..."> 通过 @specialize 把某些 Variable 直接提升为关键字 token
+// 这样做的原因：如果关键字仍走 Variable，会导致 BinaryOp/UnaryOp/字面量等判定滞后
+kw<term> { @specialize[@name={term}]<Variable, term> }
+
+BinaryOp {
+  // 二元操作符：既支持符号操作符，也支持 FreeMarker 风格的单词操作符
+  BinaryOpToken | AngleOpToken |
+  kw<"as"> | kw<"in"> |
+  kw<"eq"> | kw<"ne"> | kw<"gt"> | kw<"lt"> | kw<"gte"> | kw<"lte"> |
+  kw<"and"> | kw<"or">
+}
+
+UnaryOp {
+  // 一元操作符：支持 ! 与 not
+  UnaryOpToken | kw<"not">
+}
+
+// 动态的外部token解析，用于处理有语法歧义的场景
+@external tokens directiveName from "./token" {
+  // 指令名使用动态 token：允许把不同指令分类（block/leaf/unknown）
+  BlockDirectiveName, LeafDirectiveName
+}
+
+// LessThan, GreaterThan 使用动态token的解析方式
+@external tokens angleTokens from "./token" {
+  // 为了避免把普通文本的 < > 与标签边界混淆，这里用动态 token 辅助判断
+  LessThan, GreaterThan, AngleOpToken
+}
+
+@external tokens builtInArgsStart from "./token" {
+  // 内建调用的参数起始（通常是 "("，但可能需要更复杂的上下文判断）
+  BuiltInArgsStart
+}
+
+@external tokens ternaryQuestion from "./token" {
+  TernaryQuestion
+}
+
+@external tokens defaultValueStart from "./token" {
+  // 默认值操作符起始（通常是 "!"，但与 UnaryOpToken 可能需要区分上下文）
+  DefaultValueStart
+}
+
+// token集合，每个token对应具体的字符集
+@tokens {
+  // -------------------------- 结构性 token --------------------------
+  InterpolationStart { "${" }
+  InterpolationEnd { "}" }
+
+  CommentStart { "<#--" }
+  CommentEnd { "-->" }
+  CommentContent { (![-] | "-" ![-] | "--" ![>])+ }
+
+  StartTag { "<#" }
+  EndTag { "</#" }
+  MacroStartTag { "<@" }
+  MacroEndTag { "</@" }
+  SelfClose { "/>" }
+
+  // -------------------------- 表达式 token --------------------------
+  PostfixOp { "??" }
+  BuiltInQuestion { "?" }
+  TernaryColon { ":" }
+  BinaryOpToken {
+    "..<" | ".." | "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<=" | ">=" | "&&" | "||" | "="
+  }
+
+  UnaryOpToken { "!" }
+
+  // -------------------------- 字面量与标识符 --------------------------
+  NumberLiteral {
+    $[0-9]+ ( "." $[0-9]+ )? ( $[eE] $[+-]? $[0-9]+ )?
+  }
+
+  StringLiteral {
+    '"' !["]* '"' | "'" ![']* "'"
+  }
+
+  Variable {
+    $[a-zA-Z_]$[a-zA-Z0-9_]* ( "." $[a-zA-Z_]$[a-zA-Z0-9_]* )*
+  }
+
+  // -------------------------- 文本与空白 --------------------------
+  TextContent { ![$<&]+ }
+  SafeDollar { "$" }
+  Space { $[ \t\n\r]+ }
+
+  // token 优先级：确保结构 token 优先于 Text 的匹配
+  @precedence { InterpolationStart, StartTag, EndTag, MacroStartTag, MacroEndTag, SafeDollar }
+}
